@@ -1,298 +1,115 @@
 #!/usr/bin/env python3
-"""Read-only nearby Wi-Fi network scanner for Kali Linux."""
+"""Offline Wi-Fi security simulator. No wireless scanning or attacks are performed."""
 
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import os
-import re
-import shutil
-import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 
 
-@dataclass
-class Network:
-    ssid: str
-    bssid: str
-    channel: str
-    frequency_mhz: str
-    signal: str
-    signal_unit: str
-    security: str
-    in_use: bool = False
+NETWORKS = [
+    {"ssid": "HomeNetwork_5G", "bssid": "02:5A:11:00:00:01", "channel": 44, "signal": 92, "band": "5 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0001"},
+    {"ssid": "TPLink_A47C", "bssid": "02:5A:11:00:00:02", "channel": 6, "signal": 84, "band": "2.4 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0002"},
+    {"ssid": "ASUS_2.4GHz", "bssid": "02:5A:11:00:00:03", "channel": 11, "signal": 77, "band": "2.4 GHz", "security": "WPA3-Personal", "key": "FICTIONAL-KEY-0003"},
+    {"ssid": "NETGEAR_EXT", "bssid": "02:5A:11:00:00:04", "channel": 36, "signal": 69, "band": "5 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0004"},
+    {"ssid": "DIRECT-8C-HP-Office", "bssid": "02:5A:11:00:00:05", "channel": 1, "signal": 61, "band": "2.4 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0005"},
+    {"ssid": "Apartment_WiFi", "bssid": "02:5A:11:00:00:06", "channel": 9, "signal": 55, "band": "2.4 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0006"},
+    {"ssid": "Home-Guest", "bssid": "02:5A:11:00:00:07", "channel": 40, "signal": 48, "band": "5 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0007"},
+    {"ssid": "Router_5G_91B2", "bssid": "02:5A:11:00:00:08", "channel": 48, "signal": 42, "band": "5 GHz", "security": "WPA3-Personal", "key": "FICTIONAL-KEY-0008"},
+    {"ssid": "Pixel_Hotspot", "bssid": "02:5A:11:00:00:09", "channel": 6, "signal": 35, "band": "2.4 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0009"},
+    {"ssid": "Linksys_2G", "bssid": "02:5A:11:00:00:0A", "channel": 3, "signal": 28, "band": "2.4 GHz", "security": "WPA2-Personal", "key": "FICTIONAL-KEY-0010"},
+]
 
 
-class ScanError(RuntimeError):
-    pass
-
-
-def run(command: list[str], timeout: int = 30) -> str:
-    try:
-        result = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=timeout
-        )
-    except FileNotFoundError as exc:
-        raise ScanError(f"Komanda tapılmadı: {command[0]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ScanError("Skan vaxtı bitdi. Yenidən cəhd edin.") from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise ScanError(detail or f"Komanda uğursuz oldu: {' '.join(command)}")
-    return result.stdout
-
-
-def split_nmcli_row(row: str) -> list[str]:
-    """Split nmcli's escaped colon-separated output."""
-    fields: list[str] = []
-    current: list[str] = []
-    escaped = False
-    for char in row:
-        if escaped:
-            current.append(char)
-            escaped = False
-        elif char == "\\":
-            escaped = True
-        elif char == ":":
-            fields.append("".join(current))
-            current.clear()
-        else:
-            current.append(char)
-    if escaped:
-        current.append("\\")
-    fields.append("".join(current))
-    return fields
-
-
-def scan_nmcli(interface: str | None, rescan: bool) -> list[Network]:
-    command = [
-        "nmcli", "--terse", "--escape", "yes", "--fields",
-        "SSID,BSSID,CHAN,FREQ,RATE,SIGNAL,SECURITY,IN-USE", "device", "wifi", "list",
-    ]
-    if interface:
-        command.extend(["ifname", interface])
-    command.extend(["--rescan", "yes" if rescan else "no"])
-    output = run(command)
-    networks: list[Network] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        fields = split_nmcli_row(line)
-        if len(fields) < 8:
-            continue
-        ssid, bssid, channel, frequency, _rate, signal, security, in_use = fields[:8]
-        networks.append(Network(
-            ssid=ssid or "<gizli SSID>",
-            bssid=bssid,
-            channel=channel,
-            frequency_mhz=re.sub(r"[^0-9.]", "", frequency),
-            signal=signal,
-            signal_unit="%",
-            security=security or "Açıq",
-            in_use=in_use.strip() == "*",
-        ))
-    return networks
-
-
-def frequency_to_channel(freq: int) -> str:
-    if freq == 2484:
-        return "14"
-    if 2412 <= freq <= 2472:
-        return str((freq - 2407) // 5)
-    if 5000 <= freq < 5925:
-        return str((freq - 5000) // 5)
-    if 5955 <= freq <= 7115:
-        return str((freq - 5950) // 5)
-    return "?"
-
-
-def find_interface() -> str:
-    output = run(["iw", "dev"])
-    match = re.search(r"^\s*Interface\s+(\S+)", output, flags=re.MULTILINE)
-    if not match:
-        raise ScanError("Wi-Fi interfeysi tapılmadı. 'iw dev' nəticəsini yoxlayın.")
-    return match.group(1)
-
-
-def scan_iw(interface: str | None) -> list[Network]:
-    device = interface or find_interface()
-    output = run(["iw", "dev", device, "scan"], timeout=60)
-    networks: list[Network] = []
-    current: dict[str, str] | None = None
-
-    def save() -> None:
-        if current is None or not current.get("bssid"):
-            return
-        networks.append(Network(
-            ssid=current.get("ssid") or "<gizli SSID>",
-            bssid=current["bssid"],
-            channel=current.get("channel", "?"),
-            frequency_mhz=current.get("frequency", ""),
-            signal=current.get("signal", ""),
-            signal_unit="dBm",
-            security=current.get("security", "Açıq"),
-        ))
-
-    for line in output.splitlines():
-        match = re.match(r"BSS\s+([0-9a-fA-F:]{17})", line)
-        if match:
-            save()
-            current = {"bssid": match.group(1).lower(), "security": "Açıq"}
-            continue
-        if current is None:
-            continue
-        stripped = line.strip()
-        if stripped.startswith("freq:"):
-            frequency = re.search(r"\d+", stripped)
-            if frequency:
-                current["frequency"] = frequency.group(0)
-                current["channel"] = frequency_to_channel(int(frequency.group(0)))
-        elif stripped.startswith("SSID:"):
-            current["ssid"] = stripped.partition(":")[2].strip()
-        elif stripped.startswith("signal:"):
-            current["signal"] = stripped.partition(":")[2].strip().removesuffix(" dBm")
-        elif stripped.startswith("DS Parameter set: channel"):
-            channel = re.search(r"channel\s+(\d+)", stripped)
-            if channel:
-                current["channel"] = channel.group(1)
-        elif stripped in {"RSN:", "WPA:", "WPA:"}:
-            current["security"] = "WPA/WPA2/WPA3"
-        elif stripped.startswith("capability:") and "Privacy" in stripped and current["security"] == "Açıq":
-            current["security"] = "WEP və ya qorunan şəbəkə"
-    save()
-    return networks
-
-
-def scan(interface: str | None, backend: str, rescan: bool) -> list[Network]:
-    if backend in {"auto", "nmcli"} and shutil.which("nmcli"):
-        try:
-            return scan_nmcli(interface, rescan)
-        except ScanError:
-            if backend == "nmcli":
-                raise
-    elif backend == "nmcli":
-        raise ScanError("nmcli tapılmadı. NetworkManager quraşdırın və ya --backend iw seçin.")
-    if backend in {"auto", "iw"} and shutil.which("iw"):
-        return scan_iw(interface)
-    raise ScanError("Nə nmcli, nə də iw tapıldı. Kali-də NetworkManager və ya iw quraşdırın.")
-
-
-def signal_bars(value: str, unit: str) -> str:
-    try:
-        raw = float(value)
-        strength = raw if unit == "%" else (raw + 100) * 2
-    except (ValueError, TypeError):
-        return "?"
-    return "▂▄▆█"[: max(1, min(4, round(strength / 25)))]
-
-
-def paint(value: str, code: str) -> str:
+def paint(text: str, code: str) -> str:
     if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
-        return value
-    return f"\033[{code}m{value}\033[0m"
+        return text
+    return f"\033[{code}m{text}\033[0m"
 
 
-def demo_networks() -> list[Network]:
-    return [
-        Network("VK_5G", "02:5A:11:00:00:01", "44", "5220", "92", "%", "WPA2-Personal"),
-        Network("Dragon_Network", "02:5A:11:00:00:02", "6", "2437", "84", "%", "WPA3-Personal"),
-        Network("Kali_Lab", "02:5A:11:00:00:03", "11", "2462", "71", "%", "WPA2-Personal"),
-        Network("Cafe_Demo", "02:5A:11:00:00:04", "36", "5180", "63", "%", "Open"),
-        Network("Guest_WiFi", "02:5A:11:00:00:05", "1", "2412", "48", "%", "WPA2-Personal"),
-        Network("IoT_2.4G", "02:5A:11:00:00:06", "3", "2422", "37", "%", "WPA2-Personal"),
-        Network("<hidden SSID demo>", "02:5A:11:00:00:07", "149", "5745", "25", "%", "WPA2-Personal"),
-    ]
-
-
-def dragon_animation() -> None:
-    flames = [".", "..", "...", "🔥", "🔥🔥", "🔥🔥🔥"]
-    for flame in flames:
-        text = f"\r  🐉  {flame:<6}  DRAGON SCAN INITIALIZING"
-        sys.stdout.write(paint(text, "95"))
+def animate_dragon(delay: float) -> None:
+    for flame in (".", "..", "...", "🔥", "🔥🔥", "🔥🔥🔥"):
+        sys.stdout.write(paint(f"\r  🐉  {flame:<6}  SCANNING THE SIMULATED AIRWAVES", "95"))
         sys.stdout.flush()
-        time.sleep(0.12)
+        time.sleep(delay)
     print()
 
 
-def render_banner(live: bool) -> None:
-    lines = [
+def show_banner() -> None:
+    banner = [
         "  ╔══════════════════════════════════════════════════════════════════════╗",
-        "  ║   /\\_/\\        DRAGON WI-FI SCANNER                         ║",
-        "  ║  ( o.o )        SCAN • SIMULATE • VISUALIZE                    ║",
-        "  ║   > ^ <         SAFE READ-ONLY DEMO                            ║",
+        "  ║   /\\_/\\        DRAGON WI-FI SECURITY LAB                     ║",
+        "  ║  ( o.o )        OFFLINE SIMULATION • NO RADIO ACTIONS            ║",
+        "  ║   > ^ <         FICTIONAL NETWORKS AND KEYS                      ║",
         "  ╚══════════════════════════════════════════════════════════════════════╝",
     ]
-    for index, line in enumerate(lines):
-        print(paint(line, "36" if index in (1, 2, 3) else "96"))
-    mode = "LIVE SCAN" if live else "SIMULATION — FICTIONAL NETWORKS"
-    print(paint(f"\n  MODE: {mode}\n", "93" if live else "95"))
+    for line in banner:
+        print(paint(line, "96"))
 
 
-def render_table(networks: list[Network], live: bool) -> None:
-    headers = ["SSID", "BSSID", "CH", "MHz", "SIGNAL", "", "SECURITY", "STATUS"]
-    rows = [[n.ssid, n.bssid, n.channel, n.frequency_mhz, f"{n.signal}{n.signal_unit}", signal_bars(n.signal, n.signal_unit), n.security, "CONNECTED" if n.in_use else ("VISIBLE" if live else "SIMULATED")] for n in networks]
-    widths = [min(max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i]), 28) for i in range(len(headers))]
-    print(paint("  ".join(headers[i].ljust(widths[i]) for i in range(len(headers))), "97;1"))
-    print(paint("  ".join("─" * width for width in widths), "90"))
-    for row in rows:
-        cells = []
-        for i, value in enumerate(row):
-            cell = value[:widths[i]].ljust(widths[i])
-            cells.append(paint(cell, "96" if i == 0 else "92" if i == 5 else "93" if i == 6 else "95" if i == 7 else "37"))
-        print("  ".join(cells))
-    print(paint(f"\n  TOTAL: {len(networks)} network(s)", "92;1"))
+def show_networks() -> None:
+    print(paint(f"\n  {'#':>2} {'SSID':<23} {'BSSID':<19} {'CH':>4} {'SIGNAL':>8} {'BAND':<10} {'SECURITY':<20}", "97;1"))
+    print(paint(f"  {'--':>2} {'─' * 23} {'─' * 19} {'─' * 4} {'─' * 8} {'─' * 10} {'─' * 20}", "90"))
+    for number, network in enumerate(NETWORKS, start=1):
+        signal = network["signal"]
+        signal_color = "92" if signal >= 70 else "93" if signal >= 40 else "91"
+        row = (
+            paint(f"  {number:>2} ", "95;1")
+            + paint(f"{network['ssid']:<23} ", "96")
+            + paint(f"{network['bssid']:<19} ", "90")
+            + paint(f"{network['channel']:>4} ", "37")
+            + paint(f"{signal:>7}% ", signal_color)
+            + paint(f"{network['band']:<10} ", "94")
+            + paint(f"{network['security']:<20}", "93")
+        )
+        print(row)
+    print(paint(f"\n  {len(NETWORKS)} fictional access points are loaded.\n", "92;1"))
 
 
-def save_csv(path: Path, networks: list[Network]) -> None:
-    with path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=list(asdict(networks[0]).keys()) if networks else ["ssid", "bssid", "channel", "frequency_mhz", "signal", "signal_unit", "security", "in_use"])
-        writer.writeheader()
-        writer.writerows(asdict(network) for network in networks)
+def simulate_attack(number: int, network: dict[str, object], delay: float) -> None:
+    print(paint(f"\n  Target selected: [{number}] {network['ssid']}", "96;1"))
+    print(paint("  Starting a pretend handshake capture...", "36"))
+    for percent in (12, 29, 47, 68, 86, 100):
+        filled = percent // 5
+        bar = "█" * filled + "░" * (20 - filled)
+        sys.stdout.write(paint(f"\r  [{bar}] {percent:3d}%  Simulated process", "92"))
+        sys.stdout.flush()
+        time.sleep(delay)
+    print()
+    print(paint("  Pretend attack complete.", "92;1"))
+    print(paint(f"  Fictional key: {network['key']}", "93;1"))
+    print(paint("  This key is fabricated; no real network or password was accessed.\n", "90"))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Yaxındakı Wi-Fi şəbəkələrini skan edir (yalnız oxu).")
-    parser.add_argument("-i", "--interface", help="Wi-Fi interfeysi, məsələn wlan0")
-    parser.add_argument("--backend", choices=["auto", "nmcli", "iw"], default="auto", help="Skan mühərriki (default: auto)")
-    parser.add_argument("--live", action="store_true", help="Həqiqi skan et; default olaraq demo şəbəkələri göstərilir")
-    parser.add_argument("--json", action="store_true", help="Nəticəni JSON formatında göstər")
-    parser.add_argument("--csv", metavar="FAYL", help="Nəticəni CSV faylına yaz")
-    parser.add_argument("--watch", type=float, metavar="SANİYƏ", help="Davamlı skan et, verilən intervalda yenilə")
-    parser.add_argument("--no-animation", action="store_true", help="Drakon animasiyasını söndür")
-    parser.add_argument("--no-rescan", action="store_true", help="nmcli üçün keşdən istifadə et")
+    parser = argparse.ArgumentParser(description="Offline Wi-Fi security simulation; no real wireless activity.")
+    parser.add_argument("--no-animation", action="store_true", help="Skip the animated intro")
+    parser.add_argument("--fast", action="store_true", help="Shorten animation delays")
     args = parser.parse_args()
-    if args.watch is not None and args.watch < 1:
-        parser.error("--watch ən azı 1 saniyə olmalıdır")
+    delay = 0.035 if args.fast else 0.14
 
-    try:
-        while True:
-            networks = scan(args.interface, args.backend, not args.no_rescan) if args.live else demo_networks()
-            if args.json:
-                print(json.dumps({"mode": "live" if args.live else "simulation", "scanned_at": datetime.now(timezone.utc).isoformat(), "networks": [asdict(n) for n in networks]}, ensure_ascii=False, indent=2))
-            else:
-                if not args.no_animation:
-                    dragon_animation()
-                render_banner(args.live)
-                render_table(networks, args.live)
-            if args.csv:
-                save_csv(Path(args.csv), networks)
-                if not args.json:
-                    print(f"CSV saxlanıldı: {args.csv}")
-            if args.watch is None:
-                break
-            time.sleep(args.watch)
-            print("\033[2J\033[H", end="")
-    except KeyboardInterrupt:
-        print("\nSkan dayandırıldı.")
-    except (ScanError, OSError) as exc:
-        print(f"Xəta: {exc}", file=sys.stderr)
-        return 1
+    if not args.no_animation:
+        animate_dragon(delay)
+    show_banner()
+    show_networks()
+
+    while True:
+        try:
+            choice = input(f"  Enter a number (1-{len(NETWORKS)}) to run the simulation, or Q to quit: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Session ended. No Wi-Fi activity was performed.")
+            return 0
+        if choice.lower() == "q":
+            break
+        if not choice.isdigit() or not 1 <= int(choice) <= len(NETWORKS):
+            print(paint(f"  Choose a number from 1 to {len(NETWORKS)}, or Q.\n", "91"))
+            continue
+        number = int(choice)
+        simulate_attack(number, NETWORKS[number - 1], delay)
+
+    print(paint("  Session ended. No Wi-Fi activity was performed.", "36"))
     return 0
 
 
