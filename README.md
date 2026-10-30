@@ -1,14 +1,15 @@
 # Wifiter
 
-**Wifiter** — Terminal mühitində işləyən, qabaqcıl Wi-Fi təhlil və analiz alətidir.
+**Wifiter** — Advanced Wi-Fi Security Analysis and Reconnaissance Suite for Terminal.
 
-## Xüsusiyyətlər
-* Animasiyalı Dragon banner ekranı
-* Yaxınlıqdakı Wi-Fi şəbəkələrinin avtomatik skan edilməsi və siyahılanması
-* Nömrə vasitəsilə hədəf seçimi və prosesin icrası
-* Real vaxtda əməliyyat tərəqqisi və açar aşkarlanması
+## Features
+* Animated Dragon ASCII banner
+* Automatic local Wi-Fi network scanning and display
+* Interactive target network selection
+* Real-time attack progress simulation (15 seconds execution window)
+* Numeric key extraction and verification
 
-## Quraşdırma və İşə Salma
+## Installation and Execution
 
 ```bash
 git clone https://github.com/username/wifiter.git
