@@ -14,8 +14,8 @@ Kali Linux üçün yaxınlıqdakı Wi-Fi şəbəkələrinin SSID, BSSID, kanal, 
 ## Quraşdırma
 
 ```bash
-git clone https://github.com/USERNAME/wifi-skaner.git
-cd wifi-skaner
+git clone https://github.com/manavvpopli-del/wifiter.git
+cd wifiter
 chmod +x wifi_skaner.py
 ```
 
@@ -64,18 +64,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Windows əmri `netsh wlan show networks mode=bssid` görünən şəbəkələrin BSSID, siqnal və kanal məlumatını qaytarır. [Microsoft dokumentasiyası](https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/wireless-network-connectivity-issues-troubleshooting).
 
-## GitHub-a göndərmə
+## GitHub repository
 
-GitHub-da boş repository yaradandan sonra:
-
-```bash
-git init
-git add .
-git commit -m "Initial WiFi scanner"
-git branch -M main
-git remote add origin https://github.com/USERNAME/wifi-skaner.git
-git push -u origin main
-```
+Repo: [manavvpopli-del/wifiter](https://github.com/manavvpopli-del/wifiter)
 
 ## Lisenziya
 
