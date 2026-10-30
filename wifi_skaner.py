@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -191,15 +192,61 @@ def signal_bars(value: str, unit: str) -> str:
     return "▂▄▆█"[: max(1, min(4, round(strength / 25)))]
 
 
-def render_table(networks: list[Network]) -> None:
-    headers = ["SSID", "BSSID", "Kanal", "MHz", "Siqnal", "", "Təhlükəsizlik", "Qoşulub"]
-    rows = [[n.ssid, n.bssid, n.channel, n.frequency_mhz, f"{n.signal} {n.signal_unit}".strip(), signal_bars(n.signal, n.signal_unit), n.security, "*" if n.in_use else ""] for n in networks]
-    widths = [min(max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i]), 32) for i in range(len(headers))]
-    print("  ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
-    print("  ".join("-" * width for width in widths))
+def paint(value: str, code: str) -> str:
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return value
+    return f"\033[{code}m{value}\033[0m"
+
+
+def demo_networks() -> list[Network]:
+    return [
+        Network("VK_5G", "02:5A:11:00:00:01", "44", "5220", "92", "%", "WPA2-Personal"),
+        Network("Dragon_Network", "02:5A:11:00:00:02", "6", "2437", "84", "%", "WPA3-Personal"),
+        Network("Kali_Lab", "02:5A:11:00:00:03", "11", "2462", "71", "%", "WPA2-Personal"),
+        Network("Cafe_Demo", "02:5A:11:00:00:04", "36", "5180", "63", "%", "Open"),
+        Network("Guest_WiFi", "02:5A:11:00:00:05", "1", "2412", "48", "%", "WPA2-Personal"),
+        Network("IoT_2.4G", "02:5A:11:00:00:06", "3", "2422", "37", "%", "WPA2-Personal"),
+        Network("<hidden SSID demo>", "02:5A:11:00:00:07", "149", "5745", "25", "%", "WPA2-Personal"),
+    ]
+
+
+def dragon_animation() -> None:
+    flames = [".", "..", "...", "🔥", "🔥🔥", "🔥🔥🔥"]
+    for flame in flames:
+        text = f"\r  🐉  {flame:<6}  DRAGON SCAN INITIALIZING"
+        sys.stdout.write(paint(text, "95"))
+        sys.stdout.flush()
+        time.sleep(0.12)
+    print()
+
+
+def render_banner(live: bool) -> None:
+    lines = [
+        "  ╔══════════════════════════════════════════════════════════════════════╗",
+        "  ║   /\\_/\\        DRAGON WI-FI SCANNER                         ║",
+        "  ║  ( o.o )        SCAN • SIMULATE • VISUALIZE                    ║",
+        "  ║   > ^ <         SAFE READ-ONLY DEMO                            ║",
+        "  ╚══════════════════════════════════════════════════════════════════════╝",
+    ]
+    for index, line in enumerate(lines):
+        print(paint(line, "36" if index in (1, 2, 3) else "96"))
+    mode = "LIVE SCAN" if live else "SIMULATION — FICTIONAL NETWORKS"
+    print(paint(f"\n  MODE: {mode}\n", "93" if live else "95"))
+
+
+def render_table(networks: list[Network], live: bool) -> None:
+    headers = ["SSID", "BSSID", "CH", "MHz", "SIGNAL", "", "SECURITY", "STATUS"]
+    rows = [[n.ssid, n.bssid, n.channel, n.frequency_mhz, f"{n.signal}{n.signal_unit}", signal_bars(n.signal, n.signal_unit), n.security, "CONNECTED" if n.in_use else ("VISIBLE" if live else "SIMULATED")] for n in networks]
+    widths = [min(max(len(headers[i]), *(len(row[i]) for row in rows)) if rows else len(headers[i]), 28) for i in range(len(headers))]
+    print(paint("  ".join(headers[i].ljust(widths[i]) for i in range(len(headers))), "97;1"))
+    print(paint("  ".join("─" * width for width in widths), "90"))
     for row in rows:
-        print("  ".join(value[:widths[i]].ljust(widths[i]) for i, value in enumerate(row)))
-    print(f"\nCəmi: {len(networks)} şəbəkə")
+        cells = []
+        for i, value in enumerate(row):
+            cell = value[:widths[i]].ljust(widths[i])
+            cells.append(paint(cell, "96" if i == 0 else "92" if i == 5 else "93" if i == 6 else "95" if i == 7 else "37"))
+        print("  ".join(cells))
+    print(paint(f"\n  TOTAL: {len(networks)} network(s)", "92;1"))
 
 
 def save_csv(path: Path, networks: list[Network]) -> None:
@@ -213,9 +260,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Yaxındakı Wi-Fi şəbəkələrini skan edir (yalnız oxu).")
     parser.add_argument("-i", "--interface", help="Wi-Fi interfeysi, məsələn wlan0")
     parser.add_argument("--backend", choices=["auto", "nmcli", "iw"], default="auto", help="Skan mühərriki (default: auto)")
+    parser.add_argument("--live", action="store_true", help="Həqiqi skan et; default olaraq demo şəbəkələri göstərilir")
     parser.add_argument("--json", action="store_true", help="Nəticəni JSON formatında göstər")
     parser.add_argument("--csv", metavar="FAYL", help="Nəticəni CSV faylına yaz")
     parser.add_argument("--watch", type=float, metavar="SANİYƏ", help="Davamlı skan et, verilən intervalda yenilə")
+    parser.add_argument("--no-animation", action="store_true", help="Drakon animasiyasını söndür")
     parser.add_argument("--no-rescan", action="store_true", help="nmcli üçün keşdən istifadə et")
     args = parser.parse_args()
     if args.watch is not None and args.watch < 1:
@@ -223,11 +272,14 @@ def main() -> int:
 
     try:
         while True:
-            networks = scan(args.interface, args.backend, not args.no_rescan)
+            networks = scan(args.interface, args.backend, not args.no_rescan) if args.live else demo_networks()
             if args.json:
-                print(json.dumps({"scanned_at": datetime.now(timezone.utc).isoformat(), "networks": [asdict(n) for n in networks]}, ensure_ascii=False, indent=2))
+                print(json.dumps({"mode": "live" if args.live else "simulation", "scanned_at": datetime.now(timezone.utc).isoformat(), "networks": [asdict(n) for n in networks]}, ensure_ascii=False, indent=2))
             else:
-                render_table(networks)
+                if not args.no_animation:
+                    dragon_animation()
+                render_banner(args.live)
+                render_table(networks, args.live)
             if args.csv:
                 save_csv(Path(args.csv), networks)
                 if not args.json:
